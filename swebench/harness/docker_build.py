@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import logging
 import re
 import traceback
@@ -129,6 +130,11 @@ def build_image(
             decode=True,
             platform=platform,
             nocache=nocache,
+            network_mode="host",
+            buildargs={
+                "HTTP_PROXY": os.environ["http_proxy"] or os.environ["HTTP_PROXY"] or "",
+                "HTTPS_PROXY": os.environ["https_proxy"] or os.environ["HTTPS_PROXY"] or "",
+            },
         )
 
         # Log the build process continuously
