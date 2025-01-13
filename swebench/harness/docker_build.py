@@ -122,6 +122,7 @@ def build_image(
         logger.info(
             f"Building docker image {image_name} in {build_dir} with platform {platform}"
         )
+
         response = client.api.build(
             path=str(build_dir),
             tag=image_name,
@@ -132,8 +133,8 @@ def build_image(
             nocache=nocache,
             network_mode="host",
             buildargs={
-                "HTTP_PROXY": os.environ["http_proxy"] or os.environ["HTTP_PROXY"] or "",
-                "HTTPS_PROXY": os.environ["https_proxy"] or os.environ["HTTPS_PROXY"] or "",
+                "HTTP_PROXY": os.environ.get("http_proxy") or os.environ.get("HTTP_PROXY") or "",
+                "HTTPS_PROXY": os.environ.get("https_proxy") or os.environ.get("HTTPS_PROXY") or "",
             },
         )
 
