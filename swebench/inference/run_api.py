@@ -42,6 +42,7 @@ MODEL_LIMITS = {
     "gpt-4-0613": 8_192,
     "gpt-4-1106-preview": 128_000,
     "gpt-4-0125-preview": 128_000,
+    "Qwen3-32B": 200_000,
 }
 
 # The cost per token for each model input.
@@ -61,6 +62,7 @@ MODEL_COST_PER_INPUT = {
     "gpt-4-32k": 0.00006,
     "gpt-4-1106-preview": 0.00001,
     "gpt-4-0125-preview": 0.00001,
+    "Qwen3-32B": 0.00001,
 }
 
 # The cost per token for each model output.
@@ -80,6 +82,7 @@ MODEL_COST_PER_OUTPUT = {
     "gpt-4-32k": 0.00012,
     "gpt-4-1106-preview": 0.00003,
     "gpt-4-0125-preview": 0.00003,
+    "Qwen3-32B": 0.00001,
 }
 
 # used for azure
@@ -173,11 +176,12 @@ def claude_tokenize(string: str, api) -> int:
 
 def openai_inference(
     test_dataset,
-    model_name_or_path,
+    model_name_or_path: str,
     output_file,
     model_args,
     existing_ids,
     max_cost,
+    thinking: bool = False,
 ):
     """
     Runs inference on a dataset using the openai API.
@@ -190,9 +194,12 @@ def openai_inference(
     existing_ids (set): A set of ids that have already been processed.
     max_cost (float): The maximum cost to spend on inference.
     """
-    encoding = tiktoken.encoding_for_model(model_name_or_path)
+    # encoding = tiktoken.encoding_for_model(model_name_or_path)
+    encoding = tiktoken.encoding_for_model("gpt-4o")
     test_dataset = test_dataset.filter(
-        lambda x: gpt_tokenize(x["text"], encoding) <= MODEL_LIMITS[model_name_or_path],
+        # lambda x: gpt_tokenize(x["text"], encoding) <= MODEL_LIMITS[model_name_or_path],
+        lambda x: gpt_tokenize(
+            x["problem_statement"], encoding) <= MODEL_LIMITS[model_name_or_path],
         desc="Filtering",
         load_from_cache_file=False,
     )
@@ -204,10 +211,15 @@ def openai_inference(
     openai.api_key = openai_key
     print(f"Using OpenAI key {'*' * max(0, len(openai_key) - 5) + openai_key[-5:]}")
     use_azure = model_args.pop("use_azure", False)
+    is_qwen3_32b = model_name_or_path.endswith("Qwen3-32B")
     if use_azure:
         openai.api_type = "azure"
-        openai.api_base = "https://pnlpopenai3.openai.azure.com/"
+        openai.base_url = "https://pnlpopenai3.openai.azure.com/"
         openai.api_version = "2023-05-15"
+    elif is_qwen3_32b:
+        openai.api_type = "qwen"
+        openai.base_url = os.environ["QWEN3_API_BASE"]
+        openai.api_key = openai_key
     temperature = model_args.pop("temperature", 0.2)
     top_p = model_args.pop("top_p", 0.95 if temperature > 0 else 1)
     print(f"Using temperature={temperature}, top_p={top_p}")
@@ -223,13 +235,26 @@ def openai_inference(
                 continue
             output_dict = {"instance_id": instance_id}
             output_dict.update(basic_args)
-            output_dict["text"] = f"{datum['text']}\n\n"
+            # output_dict["text"] = f"{datum['text']}\n\n"
+            output_dict["text"] = f"{datum['problem_statement']}\n\n"
+
+            model_args = {}
+            if is_qwen3_32b:
+                model_args.update({
+                    "extra_body": {
+                        "chat_template_kwargs": {
+                            "enable_thinking": thinking,
+                        },
+                    },
+                })
+
             response, cost = call_chat(
                 output_dict["model_name_or_path"],
                 output_dict["text"],
                 use_azure,
                 temperature,
                 top_p,
+                **model_args,
             )
             completion = response.choices[0].message.content
             total_cost += cost
@@ -442,12 +467,13 @@ def parse_model_args(model_args):
 def main(
     dataset_name_or_path,
     split,
-    model_name_or_path,
+    model_name_or_path: str,
     shard_id,
     num_shards,
     output_dir,
     model_args,
     max_cost,
+    thinking: bool,
 ):
     if shard_id is None and num_shards is not None:
         logger.warning(
@@ -465,6 +491,7 @@ def main(
     if shard_id is not None and num_shards is not None:
         output_file += f"__shard-{shard_id}__num_shards-{num_shards}"
     output_file = Path(output_dir, output_file + ".jsonl")
+    os.makedirs(output_dir, exist_ok=True)
     logger.info(f"Will write to {output_file}")
     existing_ids = set()
     if os.path.exists(output_file):
@@ -475,13 +502,19 @@ def main(
                 existing_ids.add(instance_id)
     logger.info(f"Read {len(existing_ids)} already completed ids from {output_file}")
     if Path(dataset_name_or_path).exists():
-        dataset = load_from_disk(dataset_name_or_path)
+        try:
+            dataset = load_from_disk(dataset_name_or_path)
+        except FileNotFoundError:
+            dataset = load_dataset(dataset_name_or_path)
     else:
         dataset = load_dataset(dataset_name_or_path)
     if split not in dataset:
         raise ValueError(f"Invalid split {split} for dataset {dataset_name_or_path}")
     dataset = dataset[split]
-    lens = np.array(list(map(len, dataset["text"])))
+    dataset = dataset.select(indices=range(10))  # for testing only
+    # for testing only
+    # lens = np.array(list(map(len, dataset["text"])))
+    lens = np.array(list(map(len, dataset["problem_statement"])))  # SWE-bench / SWE-bench_Verified dataset
     dataset = dataset.select(np.argsort(lens))
     if len(existing_ids) > 0:
         dataset = dataset.filter(
@@ -502,6 +535,9 @@ def main(
     if model_name_or_path.startswith("claude"):
         anthropic_inference(**inference_args)
     elif model_name_or_path.startswith("gpt"):
+        openai_inference(**inference_args)
+    elif model_name_or_path.endswith("Qwen3-32B"):
+        inference_args["thinking"] = thinking
         openai_inference(**inference_args)
     else:
         raise ValueError(f"Invalid model name or path {model_name_or_path}")
@@ -558,6 +594,11 @@ if __name__ == "__main__":
         type=float,
         default=None,
         help="Maximum cost to spend on inference.",
+    )
+    parser.add_argument(
+        "--thinking",
+        action="store_true",
+        help="Thinking mode (Qwen3-32B only).",
     )
     args = parser.parse_args()
     main(**vars(args))
