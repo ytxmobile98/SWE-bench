@@ -511,7 +511,7 @@ def main(
     if split not in dataset:
         raise ValueError(f"Invalid split {split} for dataset {dataset_name_or_path}")
     dataset = dataset[split]
-    dataset = dataset.select(indices=range(10))  # for testing only
+    # dataset = dataset.select(indices=range(10))  # for testing only
     # for testing only
     # lens = np.array(list(map(len, dataset["text"])))
     lens = np.array(list(map(len, dataset["problem_statement"])))  # SWE-bench / SWE-bench_Verified dataset
